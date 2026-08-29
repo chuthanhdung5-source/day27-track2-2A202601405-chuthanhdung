@@ -86,6 +86,47 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
                 )
             )
 
+        # Type validation
+        declared_type = rules.get("type")
+        if declared_type:
+            non_null = series.dropna()
+            type_passed = True
+            type_details = f"declared_type={declared_type}"
+
+            if declared_type in ("integer", "int"):
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                invalid_type_mask = numeric.isna() | (numeric % 1 != 0)
+                invalid_type_count = int(invalid_type_mask.sum())
+                type_passed = (invalid_type_count == 0)
+                type_details = f"declared_type=integer; invalid_count={invalid_type_count}"
+            elif declared_type in ("number", "float"):
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                invalid_type_count = int(numeric.isna().sum())
+                type_passed = (invalid_type_count == 0)
+                type_details = f"declared_type=number; invalid_count={invalid_type_count}"
+            elif declared_type in ("datetime", "timestamp"):
+                parsed_dt = pd.to_datetime(non_null, errors="coerce")
+                invalid_dt_count = int(parsed_dt.isna().sum())
+                type_passed = (invalid_dt_count == 0)
+                type_details = f"declared_type=datetime; invalid_count={invalid_dt_count}"
+            elif declared_type in ("boolean", "bool"):
+                valid_bools = {True, False, 0, 1, "true", "false", "True", "False", "0", "1"}
+                invalid_bool_count = int((~non_null.isin(valid_bools)).sum())
+                type_passed = (invalid_bool_count == 0)
+                type_details = f"declared_type=boolean; invalid_count={invalid_bool_count}"
+            elif declared_type in ("string", "str"):
+                pass
+
+            issues.append(
+                _issue(
+                    "type",
+                    column=column,
+                    severity=severity,
+                    passed=type_passed,
+                    details=type_details,
+                )
+            )
+
         accepted = rules.get("accepted_values")
         if accepted is not None:
             invalid_mask = series.notna() & ~series.isin(accepted)
@@ -100,7 +141,6 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
                 )
             )
 
-        # Starter numeric range support. Type validation is intentionally minimal.
         if "min" in rules or "max" in rules:
             numeric = pd.to_numeric(series, errors="coerce")
             invalid = pd.Series(False, index=series.index)
@@ -119,11 +159,56 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
                 )
             )
 
-    # TODO(student): validate contract-level freshness using contract['freshness'].
-    # TODO(student): validate declared data types. pd.to_numeric(..., errors='coerce')
-    #                can silently hide string/type drift if you do not check it explicitly.
+    # Contract-level Freshness validation
+    freshness_config = contract.get("freshness")
+    if freshness_config and isinstance(freshness_config, dict):
+        freshness_col = freshness_config.get("column", "updated_at")
+        max_delay_minutes = float(freshness_config.get("max_delay_minutes", 30))
+        freshness_sev = freshness_config.get("severity", "warning")
+
+        if freshness_col in df.columns and len(df) > 0:
+            parsed_dt = pd.to_datetime(df[freshness_col], utc=True, errors="coerce")
+            valid_dt = parsed_dt.dropna()
+            if len(valid_dt) > 0:
+                latest_ts = valid_dt.max()
+                now_ts = pd.Timestamp.now(tz="UTC")
+                delay_minutes = (now_ts - latest_ts).total_seconds() / 60.0
+                passed_freshness = bool(delay_minutes <= max_delay_minutes)
+                issues.append(
+                    _issue(
+                        "freshness",
+                        column=freshness_col,
+                        severity=freshness_sev,
+                        passed=passed_freshness,
+                        details=f"delay_minutes={delay_minutes:.2f}; max_delay_minutes={max_delay_minutes}",
+                    )
+                )
+            else:
+                issues.append(
+                    _issue(
+                        "freshness",
+                        column=freshness_col,
+                        severity=freshness_sev,
+                        passed=False,
+                        details=f"Unable to parse valid datetime in freshness column: {freshness_col}",
+                    )
+                )
 
     return issues
+
+
+def determine_action(issues: list[dict[str, Any]]) -> str:
+    """Determine operational pipeline action based on validation issues."""
+    failed = [i for i in issues if not i.get("passed", False)]
+    if not failed:
+        return "pass"
+    has_critical = any(i.get("severity") == "critical" for i in failed)
+    if has_critical:
+        return "block"
+    has_warning = any(i.get("severity") == "warning" for i in failed)
+    if has_warning:
+        return "quarantine"
+    return "warn"
 
 
 def failed_issues(issues: list[dict[str, Any]], min_severity: str | None = None) -> list[dict[str, Any]]:

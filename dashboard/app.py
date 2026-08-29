@@ -26,6 +26,14 @@ c2.metric("Freshness (min)", f"{report['freshness_minutes']:.1f}")
 c3.metric("Contract failures", report["failed_contract_checks"])
 c4.metric("Critical failures", report["critical_contract_failures"])
 
+st.subheader("SLO & Error Budget Status")
+slo = report.get("contract_slo", {})
+sc1, sc2, sc3, sc4 = st.columns(4)
+sc1.metric("SLO Target", f"{slo.get('target', 0.999) * 100:.2f}%")
+sc2.metric("Burn Rate", f"{slo.get('burn_rate', 0.0):.2f}x")
+sc3.metric("Remaining Budget", f"{slo.get('remaining_error_budget_fraction', 1.0) * 100:.1f}%")
+sc4.metric("SLO Breached", "YES" if slo.get("breached") else "NO")
+
 st.subheader("Current signals")
 st.json({
     "row_count_anomaly": report["row_count_anomaly"],
@@ -39,5 +47,3 @@ st.line_chart(history.set_index("date")[["row_count"]])
 
 st.subheader("Example blast radius")
 st.write("stg_orders -> " + " -> ".join(report["sample_blast_radius_from_stg_orders"]))
-
-st.info("TODO: add SLO target, remaining error budget, burn-rate windows, owner/runbook links, and incident status.")

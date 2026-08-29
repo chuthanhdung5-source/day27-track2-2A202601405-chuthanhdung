@@ -29,18 +29,26 @@ def zscore_detector(current: float, history: Iterable[float], threshold: float =
 
 
 def mad_detector(current: float, history: Iterable[float], threshold: float = 3.5) -> dict[str, Any]:
-    """Robust example, intentionally incomplete around zero-MAD edge cases.
-
-    Students may improve this function and/or use it from auto mode.
-    """
+    """Robust MAD detector with proper zero-MAD and constant-history handling."""
     values = np.asarray(list(history), dtype=float)
-    if values.size < 5:
+    if values.size < 3:
         return {"is_anomaly": False, "score": 0.0, "method": "mad", "reason": "insufficient_history"}
     median = float(np.median(values))
     mad = float(np.median(np.abs(values - median)))
+    
     if mad == 0:
-        return {"is_anomaly": False, "score": 0.0, "method": "mad", "reason": "mad_is_zero_todo"}
-    modified_z = 0.6745 * abs(float(current) - median) / mad
+        mean_ad = float(np.mean(np.abs(values - median)))
+        if mean_ad > 0:
+            modified_z = 0.6745 * abs(float(current) - median) / mean_ad
+        else:
+            # All historical values were completely identical
+            if float(current) == median:
+                modified_z = 0.0
+            else:
+                modified_z = float("inf")
+    else:
+        modified_z = 0.6745 * abs(float(current) - median) / mad
+
     return {
         "is_anomaly": bool(modified_z > threshold),
         "score": float(modified_z),
@@ -57,24 +65,48 @@ def detect_anomaly(
     threshold: float = 3.0,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Stable lab API.
-
-    Current starter behavior:
-    - `zscore`: basic z-score.
-    - `mad`: MAD example.
-    - `auto`: still uses naive z-score and ignores context.
-
-    TODO(student): make `auto` context-aware. Useful context keys used by the
-    instructor may include `day_of_week`, `same_segment_history`,
-    `metric_name`, `known_event`, and `trend`.
-    """
+    """Stable lab API with context-aware auto mode."""
     if method == "mad":
-        return mad_detector(current, history)
-    if method in {"zscore", "auto"}:
-        result = zscore_detector(current, history, threshold=threshold)
-        if method == "auto":
+        return mad_detector(current, history, threshold=threshold if threshold != 3.0 else 3.5)
+    if method == "zscore":
+        return zscore_detector(current, history, threshold=threshold)
+    
+    if method == "auto":
+        # Handle context
+        hist_values = list(history)
+        context_reasons: list[str] = []
+
+        if context:
+            # 1. Use same_segment_history if provided and sufficient
+            segment_hist = context.get("same_segment_history")
+            if segment_hist and len(list(segment_hist)) >= 3:
+                hist_values = list(segment_hist)
+                context_reasons.append("used_same_segment_history")
+            
+            # 2. Known event awareness (e.g., promotional sale, maintenance window)
+            known_event = context.get("known_event")
+            if known_event:
+                context_reasons.append(f"known_event={known_event}")
+                # For known events, we may relax threshold or adjust sensitivity
+                threshold = threshold * 1.5
+
+            metric_name = context.get("metric_name")
+            if metric_name:
+                context_reasons.append(f"metric={metric_name}")
+
+        values_arr = np.asarray(hist_values, dtype=float)
+        
+        # Use MAD if sufficient history (robust against historical anomalies)
+        if values_arr.size >= 5:
+            result = mad_detector(current, values_arr, threshold=threshold if threshold != 3.0 else 3.5)
+            result["method"] = "auto:mad"
+        else:
+            result = zscore_detector(current, values_arr, threshold=threshold)
             result["method"] = "auto:zscore"
-            if context:
-                result["reason"] += "; context_ignored_by_starter=true"
+
+        if context_reasons:
+            result["reason"] += f" [{', '.join(context_reasons)}]"
+            
         return result
+
     raise ValueError(f"Unsupported method: {method}")

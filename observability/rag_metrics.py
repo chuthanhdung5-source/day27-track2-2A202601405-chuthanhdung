@@ -27,11 +27,32 @@ def detect_text_length_shift(
 
 
 def detect_embedding_norm_shift(
-    current_norms: Iterable[float], baseline_norms: Iterable[float]
+    current_norms: Iterable[float],
+    baseline_norms: Iterable[float],
+    *,
+    threshold: float = 3.0,
 ) -> dict[str, Any]:
-    """TODO(student): implement embedding-space drift signal.
+    """Detect embedding norm / magnitude shift signaling embedding drift or model changes."""
+    cur = np.asarray(list(current_norms), dtype=float)
+    base = np.asarray(list(baseline_norms), dtype=float)
+    if cur.size == 0 or base.size == 0:
+        return {"is_anomaly": False, "score": 0.0, "method": "embedding_norm_zscore", "reason": "empty_input"}
 
-    No embedding model is required for the starter lab. Hidden evaluation can
-    feed precomputed norms/similarities through this stable interface.
-    """
-    return {"is_anomaly": False, "score": 0.0, "method": "not_implemented"}
+    cur_mean = float(np.mean(cur))
+    base_mean = float(np.mean(base))
+    base_std = float(np.std(base))
+
+    if base_std == 0:
+        score = float("inf") if cur_mean != base_mean else 0.0
+    else:
+        score = abs(cur_mean - base_mean) / base_std
+
+    is_anomaly = bool(score > threshold)
+    return {
+        "is_anomaly": is_anomaly,
+        "score": float(score),
+        "method": "embedding_norm_zscore",
+        "reason": f"current_norm_mean={cur_mean:.4f}, baseline_norm_mean={base_mean:.4f}, std={base_std:.4f}, threshold={threshold}",
+        "current_mean": cur_mean,
+        "baseline_mean": base_mean,
+    }

@@ -32,12 +32,11 @@ def main() -> None:
     # context-aware instead of relying on caller-side preprocessing.
     current_dow = datetime.now().weekday()
     segment = history.loc[history["day_of_week"] == current_dow, "row_count"].tail(8).tolist()
-    row_history = segment if len(segment) >= 3 else history["row_count"].tail(14).tolist()
     row_result = detect_anomaly(
         len(orders),
-        row_history,
+        history["row_count"].tail(14).tolist(),
         method="auto",
-        context={"metric_name": "row_count", "day_of_week": current_dow},
+        context={"metric_name": "row_count", "day_of_week": current_dow, "same_segment_history": segment},
     )
 
     updated = pd.to_datetime(orders["updated_at"], utc=True, errors="coerce")
@@ -49,6 +48,14 @@ def main() -> None:
     text_result = detect_text_length_shift(
         [d["content"] for d in docs], history["mean_text_length"].tail(14).tolist()
     )
+    
+    kb_pub_times = [pd.to_datetime(d["published_at"], utc=True) for d in docs if "published_at" in d]
+    kb_freshness_minutes = (
+        (pd.Timestamp(datetime.now(timezone.utc)) - max(kb_pub_times)).total_seconds() / 60.0
+        if kb_pub_times else 0.0
+    )
+    rag_freshness_breached = kb_freshness_minutes > 60.0
+    rag_slo = calculate_slo(0.99, bad_events=1 if rag_freshness_breached else 0, total_events=1)
 
     # Demo SLO: one check event for this run.
     bad = 1 if critical_failed else 0
@@ -65,8 +72,10 @@ def main() -> None:
         "critical_contract_failures": len(critical_failed),
         "row_count_anomaly": row_result,
         "freshness_minutes": freshness_minutes,
+        "kb_freshness_minutes": kb_freshness_minutes,
         "kb_text_length_signal": text_result,
         "contract_slo": contract_slo,
+        "rag_slo": rag_slo,
         "sample_blast_radius_from_stg_orders": blast_radius,
     }
     out = ROOT / "reports" / "latest_metrics.json"
@@ -78,6 +87,7 @@ def main() -> None:
     print(f"critical contract fails  : {len(critical_failed)}")
     print(f"row-count anomaly        : {row_result['is_anomaly']} ({row_result['method']}, score={row_result['score']:.2f})")
     print(f"freshness minutes        : {freshness_minutes:.1f}")
+    print(f"KB freshness minutes     : {kb_freshness_minutes:.1f} (breach={rag_freshness_breached})")
     print(f"KB length anomaly        : {text_result['is_anomaly']}")
     print(f"sample blast radius      : {', '.join(blast_radius)}")
     print(f"report                    : {out.relative_to(ROOT)}")

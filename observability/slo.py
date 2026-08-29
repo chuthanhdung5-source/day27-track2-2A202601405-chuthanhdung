@@ -35,17 +35,52 @@ def evaluate_multiwindow_burn(
     *,
     short_window_burn: float,
     long_window_burn: float,
-    policy: str = "starter",
+    policy: str = "multiwindow",
 ) -> dict[str, Any]:
-    """TODO(student): implement a real multi-window burn-rate policy.
+    """Evaluate multi-window burn rate based on Google SRE Alerting on SLOs principles.
 
-    Starter intentionally never pages. Hidden evaluation contains cases that
-    require distinguishing sustained fast burn from a transient spike.
+    Multiwindow alerting prevents false alarms from short transient spikes while
+    ensuring rapid paging for sustained budget burn.
     """
+    # 1. Critical fast burn: 1h burn >= 14.4 AND 6h burn >= 14.4 (consumes ~2% budget in 1h, sustained)
+    if short_window_burn >= 14.4 and long_window_burn >= 14.4:
+        return {
+            "page": True,
+            "severity": "critical",
+            "reason": "sustained_fast_burn_critical",
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+            "policy": policy,
+        }
+
+    # 2. Warning slow burn: 6h burn >= 6.0 AND 36h burn >= 6.0 (consumes ~5% budget in 6h, sustained)
+    if short_window_burn >= 6.0 and long_window_burn >= 6.0:
+        return {
+            "page": True,
+            "severity": "warning",
+            "reason": "sustained_slow_burn_warning",
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+            "policy": policy,
+        }
+
+    # 3. Transient spike: high short burn but long window is not elevated -> do NOT page
+    if short_window_burn >= 6.0 and long_window_burn < 6.0:
+        return {
+            "page": False,
+            "severity": "warning" if short_window_burn >= 14.4 else "info",
+            "reason": "transient_spike_no_page",
+            "short_window_burn": short_window_burn,
+            "long_window_burn": long_window_burn,
+            "policy": policy,
+        }
+
+    # 4. Normal / safe operation
     return {
         "page": False,
         "severity": "info",
-        "reason": "starter_policy_not_implemented",
+        "reason": "normal_burn_rate",
         "short_window_burn": short_window_burn,
         "long_window_burn": long_window_burn,
+        "policy": policy,
     }
